@@ -113,6 +113,60 @@ def load_all_saved_channels():
             pass
     return all_ch
 
+def fetch_playlists(service):
+    """Fetch all playlists for the authenticated channel."""
+    playlists = []
+    req = service.playlists().list(part="snippet", mine=True, maxResults=50)
+    while req is not None:
+        resp = req.execute()
+        for item in resp.get("items", []):
+            playlists.append({
+                "id": item["id"],
+                "title": item["snippet"]["title"]
+            })
+        req = service.playlists().list_next(req, resp)
+    return playlists
+
+def create_playlist(service, title, description="", privacy_status="public"):
+    """Create a new playlist and return its ID."""
+    try:
+        body = {
+            "snippet": {
+                "title": title,
+                "description": description
+            },
+            "status": {
+                "privacyStatus": privacy_status
+            }
+        }
+        response = service.playlists().insert(
+            part="snippet,status",
+            body=body
+        ).execute()
+        return response["id"]
+    except googleapiclient.errors.HttpError as e:
+        raise Exception(f"Failed to create playlist: {str(e)}")
+
+def add_video_to_playlist(service, playlist_id, video_id):
+    """Add a video to a playlist."""
+    try:
+        body = {
+            "snippet": {
+                "playlistId": playlist_id,
+                "resourceId": {
+                    "kind": "youtube#video",
+                    "videoId": video_id
+                }
+            }
+        }
+        service.playlistItems().insert(
+            part="snippet",
+            body=body
+        ).execute()
+        return True
+    except googleapiclient.errors.HttpError as e:
+        raise Exception(f"Failed to add video to playlist: {str(e)}")
+
 
 # ── Upload ────────────────────────────────────────────────────────────────────
 def upload_video(service, file_path, channel_id, title, description, tags,
@@ -179,6 +233,8 @@ class QueueItem:
         self.basename    = os.path.basename(file_path)
         # schedule: None = immediate, datetime = scheduled time
         self.scheduled_dt = None
+        # playlist: None = no playlist, dict with id/title = add to playlist
+        self.playlist    = None
         # status: "pending" | "waiting" | "uploading" | "done" | "error" | "cancelled"
         self.status       = "pending"
         self.progress     = 0
@@ -269,6 +325,135 @@ class ScheduleDialog(tk.Toplevel):
         self.destroy()
 
 
+# ── Bulk Schedule Dialog ──────────────────────────────────────────────────────
+class BulkScheduleDialog(tk.Toplevel):
+    """Modal dialog to schedule multiple files across a date range."""
+
+    def __init__(self, parent, item_count):
+        super().__init__(parent)
+        self.title("Bulk Schedule")
+        self.configure(bg=BG)
+        self.resizable(False, False)
+        self.grab_set()
+        self.result = None  # dict with start_date, end_date, upload_time or None
+
+        now = datetime.now() + timedelta(minutes=5)
+        tomorrow = now + timedelta(days=1)
+
+        tk.Label(self, text=f"Bulk Schedule {item_count} Files",
+                 font=FONT_LG, bg=BG, fg=FG).pack(padx=20, pady=(16, 8))
+
+        tk.Label(self, text="Files will be distributed equally across the date range.\nEarlier days get extra files if uneven.",
+                 font=FONT_XS, bg=BG, fg=FG_MUTED, justify="center").pack(padx=20, pady=(0, 12))
+
+        row = tk.Frame(self, bg=BG)
+        row.pack(padx=20, pady=4)
+
+        # Start Date
+        tk.Label(row, text="Start Date (YYYY-MM-DD):", font=FONT_XS, bg=BG, fg=FG_MUTED).grid(
+            row=0, column=0, sticky="w", pady=4)
+        self._start_var = tk.StringVar(value=now.strftime("%Y-%m-%d"))
+        tk.Entry(row, textvariable=self._start_var, font=FONT_SM,
+                 bg=SURFACE2, fg=FG, insertbackground=FG,
+                 relief="flat", bd=0,
+                 highlightthickness=1, highlightbackground=BORDER,
+                 width=14).grid(row=0, column=1, padx=(8, 0), ipady=5)
+
+        # End Date
+        tk.Label(row, text="End Date (YYYY-MM-DD):", font=FONT_XS, bg=BG, fg=FG_MUTED).grid(
+            row=1, column=0, sticky="w", pady=4)
+        self._end_var = tk.StringVar(value=tomorrow.strftime("%Y-%m-%d"))
+        tk.Entry(row, textvariable=self._end_var, font=FONT_SM,
+                 bg=SURFACE2, fg=FG, insertbackground=FG,
+                 relief="flat", bd=0,
+                 highlightthickness=1, highlightbackground=BORDER,
+                 width=14).grid(row=1, column=1, padx=(8, 0), ipady=5)
+
+        # Upload Time (same for all files each day)
+        tk.Label(row, text="Upload Time (HH:MM):", font=FONT_XS, bg=BG, fg=FG_MUTED).grid(
+            row=2, column=0, sticky="w", pady=4)
+        time_frame = tk.Frame(row, bg=BG)
+        time_frame.grid(row=2, column=1, padx=(8, 0), sticky="w")
+        
+        self._hour_var = tk.StringVar(value=str(now.hour))
+        ttk.Spinbox(time_frame, from_=0, to=23, textvariable=self._hour_var,
+                    width=3, font=FONT_SM).pack(side="left", ipady=4)
+        tk.Label(time_frame, text=":", font=FONT_SM, bg=BG, fg=FG).pack(side="left", padx=2)
+        self._min_var = tk.StringVar(value=str(now.minute))
+        ttk.Spinbox(time_frame, from_=0, to=59, textvariable=self._min_var,
+                    width=3, font=FONT_SM).pack(side="left", ipady=4)
+
+        # Preview
+        self._preview_lbl = tk.Label(self, text="", font=FONT_XS,
+                                     bg=SURFACE, fg=FG_MUTED, justify="left",
+                                     relief="flat", bd=1, padx=10, pady=8)
+        self._preview_lbl.pack(padx=20, pady=12, fill="x")
+
+        # Update preview on field changes
+        self._start_var.trace_add("write", self._update_preview)
+        self._end_var.trace_add("write", self._update_preview)
+        self._update_preview()
+
+        # Buttons
+        btn_row = tk.Frame(self, bg=BG)
+        btn_row.pack(pady=(0, 16), padx=20, fill="x")
+        tk.Button(btn_row, text="Cancel", font=FONT_SM,
+                  bg=BORDER, fg=FG, relief="flat", bd=0, padx=12, pady=6,
+                  cursor="hand2", command=self._cancel).pack(side="left")
+        tk.Button(btn_row, text="Apply Schedule", font=FONT_SM,
+                  bg=ACCENT, fg="white", activebackground=ACCENT2,
+                  relief="flat", bd=0, padx=12, pady=6,
+                  cursor="hand2", command=self._apply).pack(side="right")
+
+        self.wait_window()
+
+    def _update_preview(self, *args):
+        try:
+            start = datetime.strptime(self._start_var.get(), "%Y-%m-%d")
+            end = datetime.strptime(self._end_var.get(), "%Y-%m-%d")
+            if end < start:
+                self._preview_lbl.config(text="⚠ End date must be after start date", fg=ACCENT)
+                return
+            days = (end - start).days + 1
+            self._preview_lbl.config(
+                text=f"Date range: {days} day(s)\n{start.strftime('%b %d')} to {end.strftime('%b %d, %Y')}",
+                fg=FG_MUTED)
+        except ValueError:
+            self._preview_lbl.config(text="Invalid date format", fg=ACCENT)
+
+    def _cancel(self):
+        self.result = None
+        self.destroy()
+
+    def _apply(self):
+        try:
+            start_date = datetime.strptime(self._start_var.get(), "%Y-%m-%d")
+            end_date = datetime.strptime(self._end_var.get(), "%Y-%m-%d")
+            hour = int(self._hour_var.get())
+            minute = int(self._min_var.get())
+        except ValueError:
+            messagebox.showerror("Invalid input", "Check date format: YYYY-MM-DD and time values", parent=self)
+            return
+
+        if end_date < start_date:
+            messagebox.showerror("Invalid range", "End date must be on or after start date.", parent=self)
+            return
+
+        # Combine date with time
+        upload_time = start_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if upload_time <= datetime.now():
+            messagebox.showerror("Invalid time", "First scheduled time must be in the future.", parent=self)
+            return
+
+        self.result = {
+            "start_date": start_date,
+            "end_date": end_date,
+            "hour": hour,
+            "minute": minute
+        }
+        self.destroy()
+
+
 # ── Queue Row Widget ──────────────────────────────────────────────────────────
 class QueueRow(tk.Frame):
     """One row in the queue list representing a QueueItem."""
@@ -292,6 +477,13 @@ class QueueRow(tk.Frame):
             self, text="now", font=FONT_XS,
             bg=SURFACE, fg=FG_MUTED, anchor="w", width=16)
         self._sched_lbl.pack(side="left", padx=4)
+
+        # Playlist label
+        playlist_title = self._item.playlist["title"] if self._item.playlist else ""
+        self._playlist_lbl = tk.Label(
+            self, text=playlist_title, font=FONT_XS,
+            bg=SURFACE, fg=FG_MUTED, anchor="w", width=14)
+        self._playlist_lbl.pack(side="left", padx=4)
 
         # Progress / status label
         self._status_lbl = tk.Label(
@@ -327,6 +519,10 @@ class QueueRow(tk.Frame):
         else:
             self._sched_lbl.configure(text="now", fg=FG_MUTED)
 
+    def update_playlist_label(self):
+        title = self._item.playlist["title"] if self._item.playlist else ""
+        self._playlist_lbl.configure(text=title, fg=FG_WARN if title else FG_MUTED)
+
     def update_status(self):
         s = self._item.status
         p = self._item.progress
@@ -357,8 +553,12 @@ class ChannelPanel(tk.Frame):
         self._queue       = []    # list[QueueItem]
         self._queue_rows  = {}    # QueueItem -> QueueRow
         self._uploading   = False
+        self._playlists   = []    # list of {"id": ..., "title": ...}
+        self._selected_playlist = None  # Currently selected playlist dict or None
 
         self._build()
+        # Load playlists in background
+        threading.Thread(target=self._load_playlists, daemon=True).start()
 
     # ── helpers ───────────────────────────────────────────────────────────────
     def _lf(self, label):
@@ -384,6 +584,42 @@ class ChannelPanel(tk.Frame):
                      text="  Lyrics/thumb auto-matched by filename (same basename)",
                      font=FONT_XS, bg=SURFACE, fg=FG_MUTED
                      ).pack(side="left", padx=8)
+
+        # ── Playlist section ──────────────────────────────────────────────────
+        pf = self._lf("Playlist (optional)")
+        pf.pack(fill="x", padx=16, pady=(0, 6))
+
+        playlist_row = tk.Frame(pf, bg=SURFACE)
+        playlist_row.pack(fill="x")
+
+        tk.Label(playlist_row, text="Add to:", font=FONT_XS,
+                 bg=SURFACE, fg=FG_MUTED).pack(side="left", padx=(0, 8))
+
+        self._playlist_var = tk.StringVar(value="None")
+        self._playlist_dropdown = ttk.Combobox(
+            playlist_row, textvariable=self._playlist_var,
+            font=FONT_SM, width=25, state="readonly")
+        self._playlist_dropdown["values"] = ["None", "Loading..."]
+        self._playlist_dropdown.pack(side="left", padx=4)
+        self._playlist_dropdown.bind("<<ComboboxSelected>>", self._on_playlist_selected)
+
+        tk.Button(playlist_row, text="🔄", font=FONT_SM,
+                  bg=SURFACE, fg=FG_MUTED, relief="flat", bd=0,
+                  cursor="hand2", padx=6,
+                  command=self._refresh_playlists
+                  ).pack(side="left", padx=2)
+
+        tk.Button(playlist_row, text="➕ New", font=FONT_SM,
+                  bg=BORDER, fg=FG, activebackground="#1a3a6e",
+                  relief="flat", bd=0, padx=8, pady=4,
+                  cursor="hand2", command=self._create_new_playlist
+                  ).pack(side="left", padx=4)
+
+        tk.Button(playlist_row, text="Apply to All", font=FONT_SM,
+                  bg=ACCENT, fg="white", activebackground=ACCENT2,
+                  relief="flat", bd=0, padx=8, pady=4,
+                  cursor="hand2", command=self._apply_playlist_to_all
+                  ).pack(side="right")
 
         # ── Queue list ────────────────────────────────────────────────────────
         qf = self._lf("Upload Queue")
@@ -420,17 +656,148 @@ class ChannelPanel(tk.Frame):
             command=self._on_start_queue)
         self._btn_upload.pack(fill="x", padx=16, pady=(0, 6))
 
-        # ── Clear done button ─────────────────────────────────────────────────
-        tk.Button(self, text="Clear Done / Error", font=FONT_XS,
+        # ── Bulk schedule and clear buttons ───────────────────────────────────
+        bottom_row = tk.Frame(self, bg=BG)
+        bottom_row.pack(fill="x", padx=16, pady=(0, 10))
+        
+        tk.Button(bottom_row, text="📅 Bulk Schedule", font=FONT_SM,
+                  bg=BORDER, fg=FG, activebackground="#1a3a6e",
+                  relief="flat", bd=0, padx=10, pady=5,
+                  cursor="hand2", command=self._open_bulk_schedule
+                  ).pack(side="left")
+        
+        tk.Button(bottom_row, text="Clear Done / Error", font=FONT_XS,
                   bg=SURFACE, fg=FG_MUTED, relief="flat", bd=0, padx=8, pady=4,
                   cursor="hand2", command=self._clear_done
-                  ).pack(anchor="e", padx=16, pady=(0, 10))
+                  ).pack(side="right")
 
     def _on_frame_configure(self, _):
         self._canvas.configure(scrollregion=self._canvas.bbox("all"))
 
     def _on_canvas_configure(self, e):
         self._canvas.itemconfig(self._canvas_win, width=e.width)
+
+    # ── playlist management ───────────────────────────────────────────────────
+    def _load_playlists(self):
+        """Load playlists from YouTube in background thread."""
+        try:
+            self._playlists = fetch_playlists(self.service)
+            playlist_titles = ["None"] + [p["title"] for p in self._playlists]
+            self.after(0, lambda: self._playlist_dropdown.configure(values=playlist_titles))
+            self.after(0, lambda: self._playlist_var.set("None"))
+            self.app.log(f"Loaded {len(self._playlists)} playlists for {self.channel_name}")
+        except Exception as e:
+            self.app.log(f"Failed to load playlists: {str(e)}")
+            self.after(0, lambda: self._playlist_dropdown.configure(values=["None", "Error loading"]))
+
+    def _refresh_playlists(self):
+        """Refresh playlist list."""
+        self._playlist_dropdown.configure(values=["None", "Loading..."])
+        self._playlist_var.set("Loading...")
+        threading.Thread(target=self._load_playlists, daemon=True).start()
+
+    def _on_playlist_selected(self, event=None):
+        """Handle playlist selection from dropdown."""
+        selected_title = self._playlist_var.get()
+        if selected_title == "None":
+            self._selected_playlist = None
+        else:
+            # Find the playlist dict by title
+            self._selected_playlist = next(
+                (p for p in self._playlists if p["title"] == selected_title),
+                None
+            )
+
+    def _create_new_playlist(self):
+        """Open dialog to create a new playlist."""
+        dialog = tk.Toplevel(self)
+        dialog.title("Create New Playlist")
+        dialog.configure(bg=BG)
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="New Playlist", font=FONT_LG,
+                 bg=BG, fg=FG).pack(padx=20, pady=(16, 8))
+
+        # Title input
+        tk.Label(dialog, text="Playlist Title:", font=FONT_XS,
+                 bg=BG, fg=FG_MUTED).pack(padx=20, anchor="w")
+        title_var = tk.StringVar()
+        tk.Entry(dialog, textvariable=title_var, font=FONT_SM,
+                 bg=SURFACE2, fg=FG, insertbackground=FG,
+                 relief="flat", bd=0, width=30,
+                 highlightthickness=1, highlightbackground=BORDER
+                 ).pack(padx=20, pady=(4, 12), ipady=5)
+
+        # Privacy selection
+        tk.Label(dialog, text="Privacy:", font=FONT_XS,
+                 bg=BG, fg=FG_MUTED).pack(padx=20, anchor="w")
+        privacy_var = tk.StringVar(value="public")
+        privacy_frame = tk.Frame(dialog, bg=BG)
+        privacy_frame.pack(padx=20, pady=(4, 16))
+        for val in ["public", "unlisted", "private"]:
+            tk.Radiobutton(privacy_frame, text=val.capitalize(),
+                          variable=privacy_var, value=val,
+                          font=FONT_SM, bg=BG, fg=FG,
+                          selectcolor=SURFACE, activebackground=BG,
+                          activeforeground=FG).pack(side="left", padx=8)
+
+        # Buttons
+        btn_row = tk.Frame(dialog, bg=BG)
+        btn_row.pack(pady=(0, 16), padx=20, fill="x")
+        
+        def on_create():
+            title = title_var.get().strip()
+            if not title:
+                messagebox.showerror("Invalid input", "Playlist title cannot be empty.", parent=dialog)
+                return
+            dialog.destroy()
+            threading.Thread(target=self._create_playlist_worker,
+                           args=(title, privacy_var.get()), daemon=True).start()
+
+        tk.Button(btn_row, text="Cancel", font=FONT_SM,
+                  bg=BORDER, fg=FG, relief="flat", bd=0, padx=12, pady=6,
+                  cursor="hand2", command=dialog.destroy).pack(side="left")
+        tk.Button(btn_row, text="Create", font=FONT_SM,
+                  bg=ACCENT, fg="white", activebackground=ACCENT2,
+                  relief="flat", bd=0, padx=12, pady=6,
+                  cursor="hand2", command=on_create).pack(side="right")
+
+    def _create_playlist_worker(self, title, privacy):
+        """Create playlist in background thread."""
+        try:
+            playlist_id = create_playlist(self.service, title, privacy_status=privacy)
+            new_playlist = {"id": playlist_id, "title": title}
+            self._playlists.append(new_playlist)
+            playlist_titles = ["None"] + [p["title"] for p in self._playlists]
+            self.after(0, lambda: self._playlist_dropdown.configure(values=playlist_titles))
+            self.after(0, lambda: self._playlist_var.set(title))
+            self._selected_playlist = new_playlist
+            self.app.log(f"✓ Created playlist: {title} ({privacy})")
+        except Exception as e:
+            self.app.log(f"✖ Failed to create playlist: {str(e)}")
+            self.after(0, lambda: messagebox.showerror("Playlist Error", str(e)))
+
+    def _apply_playlist_to_all(self):
+        """Apply selected playlist to all pending items."""
+        if not self._selected_playlist:
+            messagebox.showinfo("No playlist selected", "Please select a playlist first.")
+            return
+        
+        pending = [i for i in self._queue if i.status in ("pending", "waiting")]
+        if not pending:
+            messagebox.showinfo("No items", "No pending items in queue.")
+            return
+
+        for item in pending:
+            item.playlist = self._selected_playlist
+            row = self._queue_rows.get(id(item))
+            if row:
+                row.update_playlist_label()
+
+        self.app.log(f"Applied playlist '{self._selected_playlist['title']}' to {len(pending)} items")
+        messagebox.showinfo("Playlist Applied",
+                          f"All {len(pending)} pending items will be added to:\n{self._selected_playlist['title']}")
 
     # ── browse / queue management ─────────────────────────────────────────────
     def _browse_videos(self):
@@ -460,9 +827,14 @@ class ChannelPanel(tk.Frame):
         else:
             item = QueueItem(file_path)
 
+        # Inherit the currently selected playlist
+        if self._selected_playlist:
+            item.playlist = self._selected_playlist
+
         self._queue.append(item)
         self._render_queue_row(item)
-        self.app.log(f"Queued: {item.basename}")
+        playlist_note = f" → playlist: {item.playlist['title']}" if item.playlist else ""
+        self.app.log(f"Queued: {item.basename}{playlist_note}")
 
     def _render_queue_row(self, item: QueueItem):
         if self._empty_lbl.winfo_ismapped():
@@ -495,6 +867,53 @@ class ChannelPanel(tk.Frame):
         row.update_status()
         if dlg.result:
             self.app.log(f"Scheduled: {item.basename} → {dlg.result.strftime('%Y-%m-%d %H:%M')}")
+
+    def _open_bulk_schedule(self):
+        # Only schedule pending/waiting items
+        schedulable = [i for i in self._queue if i.status in ("pending", "waiting")]
+        if not schedulable:
+            messagebox.showinfo("No items", "No pending items to schedule.")
+            return
+
+        dlg = BulkScheduleDialog(self, len(schedulable))
+        if not dlg.result:
+            return  # User cancelled
+
+        # Extract schedule parameters
+        start_date = dlg.result["start_date"]
+        end_date = dlg.result["end_date"]
+        hour = dlg.result["hour"]
+        minute = dlg.result["minute"]
+
+        # Calculate distribution
+        total_days = (end_date - start_date).days + 1
+        total_files = len(schedulable)
+        files_per_day = total_files // total_days
+        extra_files = total_files % total_days
+
+        # Distribute files across dates (earlier days get extras)
+        schedule_map = []
+        for day_offset in range(total_days):
+            current_date = start_date + timedelta(days=day_offset)
+            files_today = files_per_day + (1 if day_offset < extra_files else 0)
+            for _ in range(files_today):
+                schedule_dt = current_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                schedule_map.append(schedule_dt)
+
+        # Apply schedules to items
+        for item, sched_dt in zip(schedulable, schedule_map):
+            item.scheduled_dt = sched_dt
+            item.status = "waiting"
+            row = self._queue_rows.get(id(item))
+            if row:
+                row.update_schedule_label()
+                row.update_status()
+
+        self.app.log(f"Bulk scheduled {total_files} files from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')} at {hour:02d}:{minute:02d}")
+        messagebox.showinfo("Bulk Schedule Applied", 
+                          f"Scheduled {total_files} files across {total_days} day(s).\n"
+                          f"{files_per_day} files per day" + 
+                          (f" (+{extra_files} extra on earlier days)" if extra_files > 0 else ""))
 
     def _clear_done(self):
         to_remove = [i for i in self._queue if i.status in ("done", "error", "cancelled")]
@@ -593,6 +1012,14 @@ class ChannelPanel(tk.Frame):
                     self.app.log(f"  ✔ Done — ID: {item.video_id}  ⚠ Thumbnail: {tw}\n{sched_str}")
                 else:
                     self.app.log(f"  ✔ Done — ID: {item.video_id}\n{sched_str}")
+
+                # Add to playlist if one is assigned to this item
+                if item.playlist and item.video_id and item.video_id != "unknown":
+                    try:
+                        add_video_to_playlist(self.service, item.playlist["id"], item.video_id)
+                        self.app.log(f"  ✔ Added to playlist: {item.playlist['title']}")
+                    except Exception as pe:
+                        self.app.log(f"  ⚠ Playlist add failed: {pe}")
 
         self._uploading = False
         self.after(0, lambda: self._btn_upload.configure(
