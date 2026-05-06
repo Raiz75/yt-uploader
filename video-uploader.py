@@ -469,26 +469,26 @@ class QueueRow(tk.Frame):
         # File name label
         self._name_lbl = tk.Label(
             self, text=self._item.basename, font=FONT_XS,
-            bg=SURFACE, fg=FG, anchor="w", width=28)
+            bg=SURFACE, fg=FG, anchor="w", width=20)
         self._name_lbl.pack(side="left", padx=(8, 4), pady=4)
 
         # Schedule label
         self._sched_lbl = tk.Label(
             self, text="now", font=FONT_XS,
-            bg=SURFACE, fg=FG_MUTED, anchor="w", width=16)
+            bg=SURFACE, fg=FG_MUTED, anchor="w", width=12)
         self._sched_lbl.pack(side="left", padx=4)
 
         # Playlist label
         playlist_title = self._item.playlist["title"] if self._item.playlist else ""
         self._playlist_lbl = tk.Label(
             self, text=playlist_title, font=FONT_XS,
-            bg=SURFACE, fg=FG_MUTED, anchor="w", width=14)
+            bg=SURFACE, fg=FG_MUTED, anchor="w", width=10)
         self._playlist_lbl.pack(side="left", padx=4)
 
         # Progress / status label
         self._status_lbl = tk.Label(
             self, text="pending", font=FONT_XS,
-            bg=SURFACE, fg=FG_MUTED, anchor="w", width=10)
+            bg=SURFACE, fg=FG_MUTED, anchor="w", width=8)
         self._status_lbl.pack(side="left", padx=4)
 
         # Progress bar (compact)
