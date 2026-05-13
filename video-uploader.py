@@ -488,7 +488,7 @@ class QueueRow(tk.Frame):
         # Progress / status label
         self._status_lbl = tk.Label(
             self, text="pending", font=FONT_XS,
-            bg=SURFACE, fg=FG_MUTED, anchor="w", width=8)
+            bg=SURFACE, fg=FG_MUTED, anchor="w", width=10)
         self._status_lbl.pack(side="left", padx=4)
 
         # Progress bar (compact)
