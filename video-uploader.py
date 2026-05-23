@@ -170,7 +170,8 @@ def add_video_to_playlist(service, playlist_id, video_id):
 
 # ── Upload ────────────────────────────────────────────────────────────────────
 def upload_video(service, file_path, channel_id, title, description, tags,
-                 progress_cb, done_cb, error_cb, thumb_path=None, publish_at=None):
+                 progress_cb, done_cb, error_cb, thumb_path=None, publish_at=None,
+                 stop_event=None):
     """
     publish_at: datetime (local time) or None.
       - None      → uploaded as private immediately.
@@ -199,6 +200,9 @@ def upload_video(service, file_path, channel_id, title, description, tags,
     response = None
     try:
         while response is None:
+            if stop_event and stop_event.is_set():
+                error_cb("Cancelled")
+                return
             status, response = request.next_chunk()
             if status:
                 progress_cb(int(status.progress() * 100))
@@ -553,6 +557,7 @@ class ChannelPanel(tk.Frame):
         self._queue       = []    # list[QueueItem]
         self._queue_rows  = {}    # QueueItem -> QueueRow
         self._uploading   = False
+        self._stop_event  = threading.Event()
         self._playlists   = []    # list of {"id": ..., "title": ...}
         self._selected_playlist = None  # Currently selected playlist dict or None
 
@@ -647,14 +652,26 @@ class ChannelPanel(tk.Frame):
                                    font=FONT_XS, bg=SURFACE2, fg=FG_MUTED)
         self._empty_lbl.pack(pady=20)
 
-        # ── Upload button ─────────────────────────────────────────────────────
+        # ── Upload / Stop buttons ─────────────────────────────────────────────
+        upload_row = tk.Frame(self, bg=BG)
+        upload_row.pack(fill="x", padx=16, pady=(0, 6))
+
         self._btn_upload = tk.Button(
-            self, text="⬆  Upload Queue",
+            upload_row, text="⬆  Upload Queue",
             font=FONT_LG,
             bg=ACCENT, fg="white", activebackground=ACCENT2,
             relief="flat", bd=0, cursor="hand2", padx=10, pady=10,
             command=self._on_start_queue)
-        self._btn_upload.pack(fill="x", padx=16, pady=(0, 6))
+        self._btn_upload.pack(side="left", fill="x", expand=True)
+
+        self._btn_stop = tk.Button(
+            upload_row, text="⏹  Stop",
+            font=FONT_LG,
+            bg=SURFACE, fg=FG_MUTED, activebackground=BORDER,
+            relief="flat", bd=0, cursor="hand2", padx=10, pady=10,
+            state="disabled",
+            command=self._on_stop_queue)
+        self._btn_stop.pack(side="left", padx=(4, 0))
 
         # ── Bulk schedule and clear buttons ───────────────────────────────────
         bottom_row = tk.Frame(self, bg=BG)
@@ -941,12 +958,25 @@ class ChannelPanel(tk.Frame):
                     "Missing lyrics",
                     f"No lyrics file for:\n{item.basename}\n\nPlace a .txt with the same name next to the video.")
                 return
+        self._stop_event.clear()
         self._btn_upload.configure(state="disabled", text="Running queue…")
+        self._btn_stop.configure(state="normal", bg=ACCENT, fg="white")
         threading.Thread(target=self._run_queue, args=(pending,), daemon=True).start()
+
+    def _on_stop_queue(self):
+        self._stop_event.set()
+        self._btn_stop.configure(state="disabled", text="Stopping…", bg=SURFACE, fg=FG_MUTED)
+        self.app.log("⏹ Stop requested — cancelling after current chunk…")
 
     def _run_queue(self, items):
         self._uploading = True
         for item in items:
+            if self._stop_event.is_set():
+                item.status = "cancelled"
+                self._refresh_row(item)
+                self.app.log(f"  ⏹ Skipped (stopped): {item.basename}")
+                continue
+
             item.status   = "uploading"
             item.progress = 0
             self._refresh_row(item)
@@ -997,13 +1027,17 @@ class ChannelPanel(tk.Frame):
             upload_video(self.service, item.file_path, self.channel_id,
                          title, description, tags,
                          _progress, _done_cb, _error_cb,
-                         thumb_path=tpath, publish_at=publish_at)
+                         thumb_path=tpath, publish_at=publish_at,
+                         stop_event=self._stop_event)
             _done.wait()
             self._refresh_row(item)
 
             if "error" in _result:
-                self.app.log(f"  ✖ Error: {_result['error']}")
-                self.after(0, lambda m=_result["error"]: messagebox.showerror("Upload failed", m))
+                if _result["error"] == "Cancelled":
+                    self.app.log(f"  ⏹ Upload cancelled: {item.basename}")
+                else:
+                    self.app.log(f"  ✖ Error: {_result['error']}")
+                    self.after(0, lambda m=_result["error"]: messagebox.showerror("Upload failed", m))
             else:
                 tw = _result.get("thumb_warning")
                 sched_str = (f"  Scheduled: {item.scheduled_dt.strftime('%Y-%m-%d %H:%M')}"
@@ -1024,8 +1058,14 @@ class ChannelPanel(tk.Frame):
         self._uploading = False
         self.after(0, lambda: self._btn_upload.configure(
             state="normal", text="⬆  Upload Queue"))
-        self.after(0, lambda: messagebox.showinfo(
-            "Queue complete", "All queued uploads finished."))
+        self.after(0, lambda: self._btn_stop.configure(
+            state="disabled", text="⏹  Stop", bg=SURFACE, fg=FG_MUTED))
+        if self._stop_event.is_set():
+            self.after(0, lambda: messagebox.showinfo(
+                "Stopped", "Upload queue was stopped."))
+        else:
+            self.after(0, lambda: messagebox.showinfo(
+                "Queue complete", "All queued uploads finished."))
 
     def _refresh_row(self, item: QueueItem):
         row = self._queue_rows.get(id(item))
@@ -1169,4 +1209,5 @@ class App(tk.Tk):
 # ── Entry ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     app = App()
+    app.protocol("WM_DELETE_WINDOW", lambda: os._exit(0))
     app.mainloop()
