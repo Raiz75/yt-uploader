@@ -14,7 +14,8 @@ import pickle
 CLIENT_SECRETS_FILE  = os.path.join(os.path.dirname(__file__), "client_secrets.json")
 TOKENS_DIR           = os.path.join(os.path.dirname(__file__), "tokens")
 SCOPES               = ["https://www.googleapis.com/auth/youtube"]
-RESTORE_CHANNEL_NAME = "restore"   # matched case-insensitively
+RESTORE_CHANNEL_NAME     = "restore"       # matched case-insensitively
+WONDERSKETCH_CHANNEL_NAME = "wondersketch"  # matched case-insensitively
 
 # ── Channel 1 defaults ────────────────────────────────────────────────────────
 CH1_TITLE       = "quote of the day"
@@ -28,6 +29,43 @@ CH1_TAGS        = [
     "heartbreak quotes","relationship quotes","inner thoughts","unspoken feelings",
     "late night thoughts","self love quotes","mindset quotes","real talk quotes",
     "powerful quotes","shareable quotes"
+]
+
+# ── Channel 3 (WonderSketch) defaults ────────────────────────────────────────
+CH3_DESCRIPTION = """Subscribe and learn
+#SketchWorks
+#how things work
+#how it works
+#how its made
+#engineering explained
+#technology explained
+#manufacturing process
+#inside how things work
+#curiosity channel
+#learn in seconds
+#visual learning
+#educational shorts
+#sketch explanation
+#pencil sketch animation
+#sketch art education
+#rough sketch style
+#visual storytelling
+#whiteboard style explanation
+#minimal sketch animation
+#tiktok education
+#quick learning
+#explained simply
+#1 minute learning
+#how machines work"""
+CH3_TAGS        = [
+    "SketchWorks","how things work","how it works","how its made",
+    "engineering explained","technology explained","manufacturing process",
+    "inside how things work","curiosity channel","learn in seconds",
+    "visual learning","educational shorts","sketch explanation",
+    "pencil sketch animation","sketch art education","rough sketch style",
+    "visual storytelling","whiteboard style explanation",
+    "minimal sketch animation","tiktok education","quick learning",
+    "explained simply","1 minute learning","how machines work"
 ]
 
 # ── Channel 2 (Restore) defaults ──────────────────────────────────────────────
@@ -552,7 +590,8 @@ class ChannelPanel(tk.Frame):
         self.channel_id   = channel_id
         self.service      = service
         self.app          = app
-        self.is_restore   = channel_name.strip().lower() == RESTORE_CHANNEL_NAME
+        self.is_restore      = channel_name.strip().lower() == RESTORE_CHANNEL_NAME
+        self.is_wondersketch = channel_name.strip().lower() == WONDERSKETCH_CHANNEL_NAME
 
         self._queue       = []    # list[QueueItem]
         self._queue_rows  = {}    # QueueItem -> QueueRow
@@ -992,6 +1031,11 @@ class ChannelPanel(tk.Frame):
                 description = f"{CH2_DESC_PREFIX}\n\n{title}\n\n{lyrics}"
                 tags        = CH2_TAGS
                 tpath       = item.thumb_path
+            elif self.is_wondersketch:
+                title       = os.path.splitext(item.basename)[0]
+                description = CH3_DESCRIPTION
+                tags        = CH3_TAGS
+                tpath       = None
             else:
                 title       = CH1_TITLE
                 description = CH1_DESCRIPTION
